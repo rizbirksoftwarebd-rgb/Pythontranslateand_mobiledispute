@@ -10,33 +10,28 @@ st.write("Upload an Excel file, preview it, select the mobile column, and genera
 # -------------------- CLASS DEFINITION --------------------
 class MobileCleaner:
     def __init__(self):
-        # Translator for Bangla → English digits
         self.bangla_to_english = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 
     def normalize(self, num: str) -> str:
-        """Convert Bangla → English digits and remove symbols (+, -, space, etc.)."""
         if pd.isna(num):
             return ""
         num = str(num).translate(self.bangla_to_english)
-        return re.sub(r"[^\d]", "", num)  # keep digits only
+        return re.sub(r"[^\d]", "", num)
 
     def validate_and_format(self, num: str):
-        """Return (is_valid, formatted_number)."""
         if not num:
             return False, ""
-        # Case 1: Already with 88 prefix
         if num.startswith("88") and len(num) == 13 and num[2:4] == "01":
             return True, num
-        # Case 2: Local 11-digit number
         if num.startswith("01") and len(num) == 11:
             return True, "88" + num
         return False, num
 
     def process_contacts(self, text: str):
-        """Process row text: handle multiple contacts separated by ','."""
         if pd.isna(text):
             return [], []
-        raw_numbers = [x.strip() for x in str(text).split(",") if x.strip()]
+        # split by comma or slash
+        raw_numbers = [x.strip() for x in re.split(r"[,/]", str(text)) if x.strip()]
         valid, invalid = [], []
         for raw in raw_numbers:
             cleaned = self.normalize(raw)
@@ -47,7 +42,6 @@ class MobileCleaner:
                 invalid.append(cleaned)
         return sorted(set(valid)), sorted(set(invalid))
 
-
 # -------------------- FILE UPLOAD --------------------
 uploaded_file = st.file_uploader("📂 Upload Excel File (.xlsx)", type=["xlsx"])
 
@@ -57,36 +51,43 @@ if uploaded_file:
         st.subheader("Preview of Uploaded Data (First 5 Rows)")
         st.dataframe(df_original.head())
 
-        # Dropdown to select mobile column
         column_choice = st.selectbox("📞 Select Column Containing Mobile Numbers", options=df_original.columns)
 
         if st.button("🔄 Process File"):
             cleaner = MobileCleaner()
-            translated_rows, valid_rows, invalid_rows = [], [], []
+            total_rows = len(df_original)
+            batch_size = 100
+            translated_rows = []
 
-            for _, row in df_original.iterrows():
-                valid, invalid = cleaner.process_contacts(row[column_choice])
-                new_row = row.copy()
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
-                # Add translated column (cleaned version of original column)
-                new_row["Translated_Contacts"] = ", ".join(valid + invalid)
-                translated_rows.append(new_row)
+            valid_list, invalid_list = [], []
 
-                # Add valid rows
-                if valid:
-                    row_valid = row.copy()
-                    row_valid["Valid_Contacts"] = ", ".join(valid)
-                    valid_rows.append(row_valid)
+            for start in range(0, total_rows, batch_size):
+                end = min(start + batch_size, total_rows)
+                batch = df_original.iloc[start:end].copy()
 
-                # Add invalid rows
-                if invalid:
-                    row_invalid = row.copy()
-                    row_invalid["Invalid_Contacts"] = ", ".join(invalid)
-                    invalid_rows.append(row_invalid)
+                for _, row in batch.iterrows():
+                    valid, invalid = cleaner.process_contacts(row[column_choice])
+                    # store for final extra sheet
+                    if valid:
+                        valid_list.append(", ".join(valid))
+                    else:
+                        valid_list.append("")
+                    if invalid:
+                        invalid_list.append(", ".join(invalid))
+                    else:
+                        invalid_list.append("")
 
-            translated_df = pd.DataFrame(translated_rows)
-            valid_df = pd.DataFrame(valid_rows).sort_values(by="Valid_Contacts") if valid_rows else pd.DataFrame()
-            invalid_df = pd.DataFrame(invalid_rows).sort_values(by="Invalid_Contacts") if invalid_rows else pd.DataFrame()
+                progress_bar.progress(end / total_rows)
+                status_text.text(f"Processing rows {start+1} to {end} of {total_rows}")
+
+            # Final sheet with valid & invalid contacts
+            final_sheet = pd.DataFrame({
+                "Valid_Contacts": valid_list,
+                "Invalid_Contacts": invalid_list
+            })
 
             # Save output
             folder = os.getcwd()
@@ -95,11 +96,7 @@ if uploaded_file:
 
             with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
                 df_original.to_excel(writer, sheet_name="Input_Data", index=False)
-                translated_df.to_excel(writer, sheet_name="Translated_Data", index=False)
-                if not valid_df.empty:
-                    valid_df.to_excel(writer, sheet_name="Valid_Output", index=False)
-                if not invalid_df.empty:
-                    invalid_df.to_excel(writer, sheet_name="Invalid_Output", index=False)
+                final_sheet.to_excel(writer, sheet_name="Processed_Contacts", index=False)
 
             st.success("✅ Processing complete!")
             st.download_button(

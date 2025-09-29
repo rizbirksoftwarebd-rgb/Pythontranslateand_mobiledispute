@@ -33,10 +33,10 @@ class MobileCleaner:
         return False, num
 
     def process_contacts(self, text: str):
-        """Process row text: handle multiple contacts separated by ','."""
+        """Process row text: handle multiple contacts separated by ',' or '/'."""
         if pd.isna(text):
             return [], []
-        raw_numbers = [x.strip() for x in str(text).split(",") if x.strip()]
+        raw_numbers = [x.strip() for x in re.split(r"[,/]", str(text)) if x.strip()]
         valid, invalid = [], []
         for raw in raw_numbers:
             cleaned = self.normalize(raw)
@@ -62,31 +62,27 @@ if uploaded_file:
 
         if st.button("🔄 Process File"):
             cleaner = MobileCleaner()
-            translated_rows, valid_rows, invalid_rows = [], [], []
 
-            for _, row in df_original.iterrows():
-                valid, invalid = cleaner.process_contacts(row[column_choice])
-                new_row = row.copy()
+            # Use apply for faster processing
+            def process_row(text):
+                valid, invalid = cleaner.process_contacts(text)
+                return pd.Series({
+                    "Translated_Contacts": ", ".join(valid + invalid),
+                    "Valid_Contacts": ", ".join(valid) if valid else "",
+                    "Invalid_Contacts": ", ".join(invalid) if invalid else ""
+                })
 
-                # Add translated column (cleaned version of original column)
-                new_row["Translated_Contacts"] = ", ".join(valid + invalid)
-                translated_rows.append(new_row)
+            processed = df_original[column_choice].apply(process_row)
+            translated_df = pd.concat([df_original, processed], axis=1)
 
-                # Add valid rows
-                if valid:
-                    row_valid = row.copy()
-                    row_valid["Valid_Contacts"] = ", ".join(valid)
-                    valid_rows.append(row_valid)
+            # Extract valid/invalid separately (faster than looping)
+            valid_df = translated_df[translated_df["Valid_Contacts"] != ""].copy()
+            invalid_df = translated_df[translated_df["Invalid_Contacts"] != ""].copy()
 
-                # Add invalid rows
-                if invalid:
-                    row_invalid = row.copy()
-                    row_invalid["Invalid_Contacts"] = ", ".join(invalid)
-                    invalid_rows.append(row_invalid)
-
-            translated_df = pd.DataFrame(translated_rows)
-            valid_df = pd.DataFrame(valid_rows).sort_values(by="Valid_Contacts") if valid_rows else pd.DataFrame()
-            invalid_df = pd.DataFrame(invalid_rows).sort_values(by="Invalid_Contacts") if invalid_rows else pd.DataFrame()
+            if not valid_df.empty:
+                valid_df = valid_df.sort_values(by="Valid_Contacts")
+            if not invalid_df.empty:
+                invalid_df = invalid_df.sort_values(by="Invalid_Contacts")
 
             # Save output
             folder = os.getcwd()
